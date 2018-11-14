@@ -10,3 +10,9 @@ With the graph, it marks those detected rain drop.
 
 This work done by the inspiration of the paper: Toward the camera rain gauge. Autor: P.Allamano, A. Croci, and F.Laio
 ![Detected Rain Streak](https://github.com/chrimerss/RainProperty/blob/master/Rainstreak.png)
+
+Dependencies needed for this work:
+1. Open CV
+2. numpy
+3. matplotlib
+4. scipy
