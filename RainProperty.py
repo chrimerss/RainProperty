@@ -3,6 +3,7 @@
 # Log: 2018/11/13 can not find roots for distance. How to deal with it? 
 #				  rule out diameter out of range (0.5,6) pixels or mm
 #				  after calculating drop velocity, have to compute the volume and then folowing rain rate.
+#Log: 2019/03/21  Drop velocity is not in line with reality.
 
 import cv2
 import numpy as np
@@ -10,6 +11,9 @@ import matplotlib.pyplot as plt
 import os
 import scipy.io
 from scipy.optimize import fsolve, minimize
+import logging
+
+
 
 
 class RainProperty:
@@ -32,7 +36,7 @@ class RainProperty:
 		focus_dist: focus distance (m) for specific camera (adjust)
 		sensor_h: sensor height (mm) for specific camera (adjust)
 		threshold: threshold for selecting rain streak candidate (brightness) (adjust)
-		del_l: delta l, maximum positive brightness impulse due to a drop; set as defalt 50
+		del_l: delta l, maximum positive brightness impulse due to a drop; set as default 50
 		A : aperture diameter (mm) for specific camera.
 		h,w: the height and width (pixels) for the image.
 		-----------------
@@ -52,7 +56,7 @@ class RainProperty:
 		_Dist_fun(): optimization function used for CalDistance
 
 	'''
-	def __init__(self, mat, focal_len=55, ex_time=1/200,f_num=5.6, focus_dist=2, sensor_h=3.6, threshold=1):
+	def __init__(self, mat, focal_len=18, ex_time=1/250, f_num=1.85, focus_dist=50, sensor_h=2.8, threshold=0.06):
 		# pass in the video matrix (h,w,n) haven't considered the colored image yet.
 		# Some camera parameters need to pass in as well. focus length, exposure time, focus distance etc.
 		self.mat = mat  # mat should be a matlab mat name and associated with the named in matlab
@@ -73,7 +77,8 @@ class RainProperty:
 
 	def StreakLength(self,image, graph = True):
 		image = image.astype(np.uint8).copy()
-		image, contours, hierarchy = cv2.findContours(image, cv2.RETR_LIST,
+
+		contours, hierarchy = cv2.findContours(image, cv2.RETR_LIST, \
                             cv2.CHAIN_APPROX_SIMPLE)   # detect the contour lines
 		colored_img = cv2.cvtColor(image,cv2.COLOR_GRAY2RGB)
 		for contour in contours:
@@ -104,17 +109,18 @@ class RainProperty:
 		for length, diameter in zip(self.lengths, self.diameters):
 			# produce the first constrain: 1. volume within the (2/3z0, 2z0) has a blured diameter smaller than A/2
 			length = self._Pixel2mm(length)
+			# print('length',length)
 			if diameter< self.A:
 				alpha = (length-diameter)/self.ex_time/1000*self.sensor_h/self.focal_len/self.h
 				beta = 21.62*diameter*self.sensor_h/self.focal_len/self.h
 				gamma = 21.62*self.A/1000/self.focus_dist*(1-2*self.threshold/self.del_l)
 				dist = fsolve(self._Dist_fun, x0=np.array([0.0,2.0]), args=(self.focus_dist, alpha, beta, gamma)) # typically two roots
-				if beta**2-4*gamma*alpha<0:
+				if beta**2-4*gamma*alpha<0 or len(dist)==2:
 					if not silent:
 						print(f"warning: function cannot find roots dealing with diameter {round(diameter,2)}")
 			# the second constrain; 2. we assign a probability to see whether it falls before z0 or after z0
 					dist = [dist[0] if np.random.uniform()>0.5 else dist[1]]
-			
+
 			dists.append(dist) # rule out those can not find roots
 		if not silent:
 			print(f"{len(dists)} of rain drops fall inside the control volume")
@@ -127,10 +133,18 @@ class RainProperty:
 
 	def _Pixel2mm(self, pix):
 		# this converts pixel to mm
-		return 0.2645833333*pix
+		#focal lens equation: 1/f=1/d1+1/d2
+		#The focus object is the tree which is about 50m away
+		d2= 50*1000
+		d1= self.focal_len*d2/(d2-self.focal_len)
+		h_mm= self.focal_len/d1*5000
+		pixel2mm= h_mm/self.h
+		# print('1 pixel equals',pixel2mm,'mm')
+		return pixel2mm*pix
 
 	def _ControlVolome(self):
 		# this calculates the total control volume in the range (2/3z0, 2z0)
+
 		return 52/81*(self.focus_dist*self._Pixel2mm(self.w)/self._Pixel2mm(self.h)*4*(self._Pixel2mm(self.h)/1000)**2)
 
 	def CalDropV(self):
@@ -138,16 +152,23 @@ class RainProperty:
 		V = []
 		dists = np.asarray(self.CalDistance())
 		for diameter, dist in zip(self.diameters, dists):
-			d_p = self.sensor_h/self.focal_len/self.h*dist
-			v = np.sqrt(21.62*diameter*d_p)
-			V.append(v)
+			try:
+				d_p = self.sensor_h/self.focal_len/self._Pixel2mm(self.h)*np.array(dist)*1000
+				v = np.sqrt(21.62*diameter*d_p)
+				# print('diameter:',diameter,'d_p: ', d_p, 'distance: ',dist)
+				V.append(v)
+			except:
+				print('distance cannot be calculated ', dist,f'\nsensor_h: {self.sensor_h}, focal length: {self.focal_len} h: {self.h}')
+		# print(np.asarray(V).max())
 		return V
 
 	def RainRate(self):
 		# This calculates rain rate with a control volume approach
 		# dimension mm/h
 		V = self.CalDropV()
+		assert len(V)==len(self.diameters)
 		total_rain_rate = (1/6*np.pi*np.asarray(self.diameters)**3*np.asarray(V)*3.6*10**(-3)/self._ControlVolome()).sum()
-		return total_rain_rate
+		# print('rain:',total_rain_rate)
+		return total_rain_rate, V
 
 
